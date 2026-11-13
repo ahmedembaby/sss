@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const qrcodeTerminal = require('qrcode-terminal');
-const { WHATSAPP_ENABLED, CHROME_PATH } = require('../config');
+const { WHATSAPP_ENABLED, PUPPETEER_EXECUTABLE_PATH } = require('../config');
 
 let QRCode = null;
 try { QRCode = require('qrcode'); } catch { /* optional: the terminal QR still works */ }
@@ -22,26 +22,10 @@ let lastError = WHATSAPP_ENABLED ? null : 'WhatsApp disabled (WHATSAPP_ENABLED=f
 let restartTimer = null;
 let starting = false;
 
-/** CHROME_PATH from .env, otherwise the first Chrome / Edge / Chromium found in the usual places. */
-function findBrowser() {
-  if (CHROME_PATH) return fs.existsSync(CHROME_PATH) ? CHROME_PATH : null;
-  const env = process.env;
-  const candidates = {
-    win32: [
-      path.join(env.PROGRAMFILES || 'C:\\Program Files', 'Google\\Chrome\\Application\\chrome.exe'),
-      path.join(env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google\\Chrome\\Application\\chrome.exe'),
-      path.join(env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
-      path.join(env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft\\Edge\\Application\\msedge.exe'),
-      path.join(env.PROGRAMFILES || 'C:\\Program Files', 'Microsoft\\Edge\\Application\\msedge.exe'),
-    ],
-    darwin: [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    ],
-    linux: ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium'],
-  }[process.platform] || [];
-  return candidates.find((p) => p && fs.existsSync(p)) || null;
+/** Resolve Puppeteer's managed Chrome for Testing; never search the host for system Chrome/Edge. */
+function findBrowser(puppeteer) {
+  const browserPath = PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath();
+  return browserPath && fs.existsSync(browserPath) ? browserPath : null;
 }
 
 function scheduleRestart(ms, reason) {
@@ -63,16 +47,17 @@ async function start() {
   lastError = null;
   lastQr = null;
   try {
+    const puppeteer = require('puppeteer');
     ({ Client, LocalAuth } = require('whatsapp-web.js'));
-    const browser = findBrowser();
+    const browser = findBrowser(puppeteer);
     if (!browser) {
       throw Object.assign(new Error(
-        CHROME_PATH
-          ? `CHROME_PATH does not exist: ${CHROME_PATH}`
-          : 'Chrome / Edge was not found. Install Chrome or set CHROME_PATH in .env (chromedriver is not a browser).'
+        PUPPETEER_EXECUTABLE_PATH
+          ? `PUPPETEER_EXECUTABLE_PATH does not exist: ${PUPPETEER_EXECUTABLE_PATH}`
+          : 'Puppeteer-managed browser is not installed. Run: npm run browser:install'
       ), { fatal: true });
     }
-    console.log(`WhatsApp: starting with ${browser}`);
+    console.log(`WhatsApp: starting with Puppeteer browser ${browser}`);
 
     await destroyClient();
     client = new Client({
