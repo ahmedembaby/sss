@@ -13,7 +13,7 @@ async function generateUsername(name, id) {
 }
 
 async function backfillUsernames() {
-  const [rows] = await pool.query('SELECT id, name FROM users WHERE username IS NULL OR username = ""');
+  const [rows] = await pool.query('SELECT id, name FROM users WHERE username IS NULL OR username = ''');
   for (const u of rows) {
     const username = await generateUsername(u.name, u.id);
     await pool.query('UPDATE users SET username = ? WHERE id = ?', [username, u.id]);
