@@ -24,6 +24,7 @@ let starting = false;
 let lifecycleQueue = Promise.resolve();
 let shuttingDown = false;
 let manualLogout = false;
+let clearAuthOnRestart = false;
 
 // Ensure start/restart/logout/stop cannot mutate the same Puppeteer client concurrently.
 function serialize(task) {
@@ -84,6 +85,11 @@ async function startInternal() {
 
     await destroyClient();
     const authPath = path.resolve(WHATSAPP_AUTH_PATH);
+    if (clearAuthOnRestart) {
+      try { fs.rmSync(path.join(authPath, 'session-echat-whatsapp'), { recursive: true, force: true }); }
+      catch (err) { console.warn('WhatsApp: could not clear logged-out session:', err.message); }
+      clearAuthOnRestart = false;
+    }
     fs.mkdirSync(authPath, { recursive: true });
     client = new Client({
       authStrategy: new LocalAuth({ clientId: 'echat-whatsapp', dataPath: authPath }),
@@ -111,7 +117,7 @@ async function startInternal() {
       if (client !== instance) return;
       status = STATUS.ERROR;
       lastError = `Authentication failed: ${msg}`;
-      console.error('WhatsApp:', lastError, '- delete the .wwebjs_auth folder and scan again');
+      console.error('WhatsApp:', lastError, '- check the configured WHATSAPP_AUTH_PATH and link the account again');
     });
     instance.on('ready', () => {
       if (client !== instance) return;
@@ -125,9 +131,8 @@ async function startInternal() {
       console.warn('WhatsApp:', lastError);
       if (manualLogout || shuttingDown) return;
       if (String(reason).toUpperCase() === 'LOGOUT') {
-        // A remotely logged-out LocalAuth session cannot be reused; the next start must show a fresh QR.
-        try { fs.rmSync(path.join(authPath, 'session-echat-whatsapp'), { recursive: true, force: true }); }
-        catch (err) { console.warn('WhatsApp: could not clear logged-out session:', err.message); }
+        // Remove the stale profile only after the old Chromium process has been closed.
+        clearAuthOnRestart = true;
       }
       scheduleRestart(10000, 'disconnected');
     });
@@ -214,10 +219,10 @@ async function sendOTP(phoneNumber, code) {
       const id = await withTimeout(client.getNumberId(digits), 20000);
       if (!id) return { success: false, code: 'NOT_ON_WHATSAPP', message: 'This number is not registered on WhatsApp' };
       await withTimeout(client.sendMessage(id._serialized, text), 20000);
-      console.log(`WhatsApp: OTP sent to +${digits}`);
+      console.log('WhatsApp: OTP sent successfully.');
       return { success: true, message: 'OTP sent via WhatsApp' };
     } catch (err) {
-      console.error(`WhatsApp send failed (attempt ${attempt}):`, err.message);
+      console.error(`WhatsApp send failed (attempt ${attempt}):`, String(err.message || err).replace(/\+?\d{7,}/g, '[redacted]'));
       if (attempt === 2) return { success: false, code: 'SEND_FAILED', message: err.message };
       await new Promise((r) => setTimeout(r, 1500));
     }
