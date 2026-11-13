@@ -36,8 +36,14 @@ async function guard(req, res, next) {
 }
 
 router.get('/status', guard, async (req, res) => res.json(await wa.getState()));
-router.post('/restart', guard, async (req, res) => { wa.restart(); res.json({ success: true }); });
-router.post('/logout', guard, async (req, res) => { wa.logout(); res.json({ success: true }); });
+router.post('/restart', guard, async (req, res) => {
+  try { await wa.restart(); res.json({ success: true, status: (await wa.getState()).status }); }
+  catch (err) { res.status(500).json({ success: false, message: 'WhatsApp restart failed' }); }
+});
+router.post('/logout', guard, async (req, res) => {
+  try { await wa.logout(); res.json({ success: true, status: (await wa.getState()).status }); }
+  catch (err) { res.status(500).json({ success: false, message: 'WhatsApp logout failed' }); }
+});
 
 // Simple page to link the account: open http://<server>:5000/api/whatsapp/setup
 router.get('/setup', guard, async (req, res) => {
