@@ -522,7 +522,7 @@ function sqliteType(sql) {
     .replace(/\bJSON\b/gi, 'TEXT')
     .replace(/\s+ON UPDATE CURRENT_TIMESTAMP/gi, '')
     .replace(/UNIQUE KEY\s+[a-zA-Z0-9_]+\s*\(([^)]+)\)/gi, 'UNIQUE ($1)')
-    .replace(/,?\\s*INDEX\\s+[a-zA-Z0-9_]+\\s*\\([^)]+\\),?/gi, '');
+    .replace(/,?\s*INDEX\s+[a-zA-Z0-9_]+\s*\([^)]+\),?/gi, '');
 }
 
 function normalizeParams(params) {
