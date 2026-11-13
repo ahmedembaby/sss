@@ -531,9 +531,25 @@ function normalizeParams(params) {
   const expanded = [];
   for (const value of (Array.isArray(params) ? params : params == null ? [] : [params])) {
     if (Array.isArray(value)) {
-      if (!value.length) expanded.push('NULL');
-      else { expanded.push(value.map(() => '?').join(', ')); values.push(...value); }
-    } else { expanded.push('?'); values.push(value); }
+      if (!value.length) {
+        expanded.push('NULL');
+      } else if (Array.isArray(value[0])) {
+        // mysql2 accepts bulk inserts as: INSERT ... VALUES ? with [[a,b],[c,d]].
+        const rows = value;
+        const width = rows[0].length;
+        if (!width || rows.some((row) => !Array.isArray(row) || row.length !== width)) {
+          throw new TypeError('Bulk insert rows must have the same non-zero number of columns');
+        }
+        expanded.push(rows.map(() => '(' + rows[0].map(() => '?').join(', ') + ')').join(', '));
+        values.push(...rows.flat());
+      } else {
+        expanded.push(value.map(() => '?').join(', '));
+        values.push(...value);
+      }
+    } else {
+      expanded.push('?');
+      values.push(value);
+    }
   }
   return { values, placeholders: expanded };
 }
@@ -546,8 +562,12 @@ function translate(sql, params) {
   statement = statement.replace(/\bINSERT\s+IGNORE\s+INTO\b/gi, 'INSERT OR IGNORE INTO');
   statement = statement.replace(/\bNOW\s*\(\s*\)/gi, 'CURRENT_TIMESTAMP');
   statement = statement.replace(/\bIF\s*\(([^,]+),([^,]+),([^)]+)\)/gi, 'CASE WHEN $1 THEN $2 ELSE $3 END');
-  statement = statement.replace(/DATE_SUB\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi, "datetime('now', '-$1 $2')");
-  statement = statement.replace(/DATE_ADD\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi, "datetime('now', '+$1 $2')");
+  statement = statement.replace(/DATE_SUB\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+|\?)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi,
+    (_, amount, unit) => amount === '?' ? "datetime('now', '-' || ? || ' " + unit.toLowerCase() + "s')" : "datetime('now', '-" + amount + " " + unit.toLowerCase() + "s')");
+  statement = statement.replace(/DATE_ADD\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+|\?)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi,
+    (_, amount, unit) => amount === '?' ? "datetime('now', '+' || ? || ' " + unit.toLowerCase() + "s')" : "datetime('now', '+" + amount + " " + unit.toLowerCase() + "s')");
+  statement = statement.replace(/FROM_UNIXTIME\(\s*\?\s*\)/gi, "datetime(? , 'unixepoch')");
+  statement = statement.replace(/FROM_UNIXTIME\(\s*(\d+)\s*\)/gi, "datetime($1, 'unixepoch')");
   statement = statement.replace(/VALUES\s*\(\s*([a-zA-Z0-9_]+)\s*\)/gi, 'excluded.$1');
   statement = statement.replace(/\s+ON DUPLICATE KEY UPDATE\s+/i, ' ON CONFLICT DO UPDATE SET ');
   statement = statement.replace(/\bDATABASE\s*\(\s*\)/gi, "'sqlite'");
