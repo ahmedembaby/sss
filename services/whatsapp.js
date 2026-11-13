@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const qrcodeTerminal = require('qrcode-terminal');
-const { WHATSAPP_ENABLED, PUPPETEER_EXECUTABLE_PATH } = require('../config');
+const { WHATSAPP_ENABLED, PUPPETEER_EXECUTABLE_PATH, WHATSAPP_AUTH_PATH } = require('../config');
 
 let QRCode = null;
 try { QRCode = require('qrcode'); } catch { /* optional: the terminal QR still works */ }
@@ -21,6 +21,16 @@ let lastQr = null;
 let lastError = WHATSAPP_ENABLED ? null : 'WhatsApp disabled (WHATSAPP_ENABLED=false)';
 let restartTimer = null;
 let starting = false;
+let lifecycleQueue = Promise.resolve();
+let shuttingDown = false;
+let manualLogout = false;
+
+// Ensure start/restart/logout/stop cannot mutate the same Puppeteer client concurrently.
+function serialize(task) {
+  const operation = lifecycleQueue.then(task, task);
+  lifecycleQueue = operation.catch(() => {});
+  return operation;
+}
 
 /** Resolve Puppeteer's managed Chrome for Testing; never search the host for system Chrome/Edge. */
 function findBrowser(puppeteer) {
@@ -41,7 +51,10 @@ function findBrowser(puppeteer) {
 function scheduleRestart(ms, reason) {
   if (restartTimer || !WHATSAPP_ENABLED) return;
   console.log(`WhatsApp: restarting in ${Math.round(ms / 1000)}s (${reason})`);
-  restartTimer = setTimeout(() => { restartTimer = null; start(); }, ms);
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    start().catch((err) => console.error('WhatsApp restart failed:', err.message));
+  }, ms);
 }
 
 async function destroyClient() {
@@ -50,8 +63,8 @@ async function destroyClient() {
   if (c) { try { await c.destroy(); } catch { /* browser already gone */ } }
 }
 
-async function start() {
-  if (!WHATSAPP_ENABLED || starting) return;
+async function startInternal() {
+  if (!WHATSAPP_ENABLED || shuttingDown || starting) return;
   starting = true;
   status = STATUS.STARTING;
   lastError = null;
@@ -70,37 +83,56 @@ async function start() {
     console.log(`WhatsApp: starting with Puppeteer browser ${browser}`);
 
     await destroyClient();
+    const authPath = path.resolve(WHATSAPP_AUTH_PATH);
+    fs.mkdirSync(authPath, { recursive: true });
     client = new Client({
-      authStrategy: new LocalAuth({ clientId: 'echat-whatsapp' }),
+      authStrategy: new LocalAuth({ clientId: 'echat-whatsapp', dataPath: authPath }),
       puppeteer: {
         headless: true,
         executablePath: browser,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
       },
     });
+    const instance = client;
 
-    client.on('qr', async (qr) => {
+    instance.on('qr', async (qr) => {
+      if (client !== instance) return;
       status = STATUS.QR;
       lastQr = qr;
       console.log('=== WhatsApp: scan this QR with the phone that will send the codes (WhatsApp > Linked devices) ===');
       qrcodeTerminal.generate(qr, { small: true });
       console.log('    or open http://localhost:<PORT>/api/whatsapp/setup');
     });
-    client.on('authenticated', () => { status = STATUS.AUTHENTICATED; lastQr = null; console.log('WhatsApp: authenticated'); });
-    client.on('auth_failure', (msg) => {
+    instance.on('authenticated', () => {
+      if (client !== instance) return;
+      status = STATUS.AUTHENTICATED; lastQr = null; console.log('WhatsApp: authenticated');
+    });
+    instance.on('auth_failure', (msg) => {
+      if (client !== instance) return;
       status = STATUS.ERROR;
       lastError = `Authentication failed: ${msg}`;
       console.error('WhatsApp:', lastError, '- delete the .wwebjs_auth folder and scan again');
     });
-    client.on('ready', () => { status = STATUS.READY; lastQr = null; lastError = null; console.log('WhatsApp: ready, OTP codes will be sent from', client.info?.wid?.user || 'the linked account'); });
-    client.on('disconnected', (reason) => {
+    instance.on('ready', () => {
+      if (client !== instance) return;
+      status = STATUS.READY; lastQr = null; lastError = null;
+      console.log('WhatsApp: ready, OTP codes will be sent from', instance.info?.wid?.user || 'the linked account');
+    });
+    instance.on('disconnected', (reason) => {
+      if (client !== instance) return; // Ignore events from a browser that has already been replaced.
       status = STATUS.DISCONNECTED;
       lastError = `Disconnected: ${reason}`;
       console.warn('WhatsApp:', lastError);
-      destroyClient().finally(() => scheduleRestart(10000, 'disconnected'));
+      if (manualLogout || shuttingDown) return;
+      if (String(reason).toUpperCase() === 'LOGOUT') {
+        // A remotely logged-out LocalAuth session cannot be reused; the next start must show a fresh QR.
+        try { fs.rmSync(path.join(authPath, 'session-echat-whatsapp'), { recursive: true, force: true }); }
+        catch (err) { console.warn('WhatsApp: could not clear logged-out session:', err.message); }
+      }
+      scheduleRestart(10000, 'disconnected');
     });
 
-    await client.initialize();
+    await instance.initialize();
   } catch (err) {
     status = STATUS.ERROR;
     lastError = String(err.message || err).split('\n')[0];
@@ -113,24 +145,55 @@ async function start() {
   }
 }
 
+function start() {
+  if (!WHATSAPP_ENABLED || shuttingDown) return Promise.resolve();
+  return serialize(startInternal);
+}
+
 async function restart() {
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
-  await destroyClient();
-  starting = false;
-  return start();
+  return serialize(async () => {
+    await destroyClient();
+    return startInternal();
+  });
 }
 
 /** Unlink the account and wipe the saved session (a new QR is shown afterwards). */
 async function logout() {
-  const c = client;
-  if (c) { try { await c.logout(); } catch { /* not logged in */ } }
-  await destroyClient();
-  try { fs.rmSync(path.join(process.cwd(), '.wwebjs_auth', 'session-echat-whatsapp'), { recursive: true, force: true }); } catch { /* ignore */ }
-  starting = false;
-  return start();
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  return serialize(async () => {
+    manualLogout = true;
+    try {
+      const c = client;
+      if (c) { try { await c.logout(); } catch { /* not logged in */ } }
+      await destroyClient();
+      try { fs.rmSync(path.join(path.resolve(WHATSAPP_AUTH_PATH), 'session-echat-whatsapp'), { recursive: true, force: true }); }
+      catch (err) { console.warn('WhatsApp: could not remove saved session:', err.message); }
+    } finally {
+      manualLogout = false;
+    }
+    return startInternal();
+  });
 }
 
-const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('WhatsApp timed out')), ms))]);
+async function stop() {
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  return serialize(async () => {
+    shuttingDown = true;
+    await destroyClient();
+    status = STATUS.DISCONNECTED;
+    lastQr = null;
+    lastError = 'WhatsApp stopped';
+  });
+}
+
+const withTimeout = (promise, ms) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('WhatsApp timed out')), ms);
+  Promise.resolve(promise).then(
+    (value) => { clearTimeout(timer); resolve(value); },
+    (error) => { clearTimeout(timer); reject(error); }
+  );
+});
 
 /**
  * Send the code. Returns { success, code? }:
@@ -138,7 +201,8 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
  */
 async function sendOTP(phoneNumber, code) {
   if (!client || status !== STATUS.READY) {
-    console.log(`WhatsApp not ready (${status}). OTP for ${phoneNumber}: ${code}`);
+    // Never write verification codes or full phone numbers to application logs.
+    console.warn(`WhatsApp not ready (${status}); OTP delivery deferred.`);
     return { success: false, code: 'NOT_READY', message: 'WhatsApp is not connected. Open /api/whatsapp/setup and scan the QR code.' };
   }
   const digits = String(phoneNumber).replace(/\D/g, '');
@@ -169,4 +233,4 @@ async function getState() {
   return { status, ready: status === STATUS.READY, qr: lastQr, qrImage, error: lastError, account: client?.info?.wid?.user || null };
 }
 
-module.exports = { start, restart, logout, sendOTP, getState, isClientReady: () => status === STATUS.READY, STATUS };
+module.exports = { start, restart, logout, stop, sendOTP, getState, isClientReady: () => status === STATUS.READY, STATUS };
