@@ -229,6 +229,7 @@ async function start() {
 
 async function shutdown() {
   console.log('Shutting down...');
+  try { await require('./services/whatsapp').stop(); } catch (err) { console.warn('WhatsApp shutdown:', err.message); }
   try { if (redis.client) await redis.client.quit(); } catch { /* ignore */ }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
