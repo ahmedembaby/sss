@@ -1,7 +1,7 @@
 {
   "name": "special-server",
   "version": "1.0.0",
-  "description": "Special backend server with MySQL and Socket.io",
+  "description": "Special backend server with SQLite and Socket.io",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -19,8 +19,7 @@
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.5.0",
-    "mysql2": "^3.6.0",
-    "qrcode": "^1.5.4",
+        "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "socket.io": "^4.7.2",
     "whatsapp-web.js": "^1.34.7"

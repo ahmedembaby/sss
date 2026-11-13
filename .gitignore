@@ -5,3 +5,7 @@ node_modules
 *.log
 uploads/*
 !uploads/.gitkeep
+
+# Local SQLite database files
+/data/*.sqlite
+/data/*.sqlite-*
