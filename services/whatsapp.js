@@ -137,7 +137,7 @@ async function startInternal() {
       scheduleRestart(10000, 'disconnected');
     });
 
-    await instance.initialize();
+    await withTimeout(instance.initialize(), 120000);
   } catch (err) {
     status = STATUS.ERROR;
     lastError = String(err.message || err).split('\n')[0];
@@ -205,7 +205,8 @@ const withTimeout = (promise, ms) => new Promise((resolve, reject) => {
  *  NOT_READY, NOT_ON_WHATSAPP, SEND_FAILED when it could not be delivered.
  */
 async function sendOTP(phoneNumber, code) {
-  if (!client || status !== STATUS.READY) {
+  const activeClient = client;
+  if (!activeClient || status !== STATUS.READY) {
     // Never write verification codes or full phone numbers to application logs.
     console.warn(`WhatsApp not ready (${status}); OTP delivery deferred.`);
     return { success: false, code: 'NOT_READY', message: 'WhatsApp is not connected. Open /api/whatsapp/setup and scan the QR code.' };
@@ -216,13 +217,24 @@ async function sendOTP(phoneNumber, code) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       // Resolves the real WhatsApp id (and tells us if the number has WhatsApp at all)
-      const id = await withTimeout(client.getNumberId(digits), 20000);
+      const id = await withTimeout(activeClient.getNumberId(digits), 20000);
       if (!id) return { success: false, code: 'NOT_ON_WHATSAPP', message: 'This number is not registered on WhatsApp' };
-      await withTimeout(client.sendMessage(id._serialized, text), 20000);
+      if (client !== activeClient || status !== STATUS.READY) {
+        return { success: false, code: 'NOT_READY', message: 'WhatsApp connection changed. Please retry.' };
+      }
+      await withTimeout(activeClient.sendMessage(id._serialized, text), 20000);
       console.log('WhatsApp: OTP sent successfully.');
       return { success: true, message: 'OTP sent via WhatsApp' };
     } catch (err) {
       console.error(`WhatsApp send failed (attempt ${attempt}):`, String(err.message || err).replace(/\+?\d{7,}/g, '[redacted]'));
+      if (/detached frame|target closed|session closed|execution context was destroyed/i.test(String(err.message || err))) {
+        if (client === activeClient) {
+          status = STATUS.DISCONNECTED;
+          lastError = 'WhatsApp browser page was closed unexpectedly';
+          scheduleRestart(10000, 'browser page closed during OTP send');
+        }
+        return { success: false, code: 'SEND_FAILED', message: 'WhatsApp connection interrupted. Please retry.' };
+      }
       if (attempt === 2) return { success: false, code: 'SEND_FAILED', message: err.message };
       await new Promise((r) => setTimeout(r, 1500));
     }
