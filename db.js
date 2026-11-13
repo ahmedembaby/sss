@@ -514,7 +514,7 @@ function sqliteType(sql) {
     .replace(/INT\s+PRIMARY KEY\s+AUTO_INCREMENT/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
     .replace(/INT\s+AUTO_INCREMENT\s+PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
     .replace(/\bAUTO_INCREMENT\b/gi, '')
-    .replace(/\bENUM\s*\((?:'[^']*'\s*,?\s*)+\)/gi, 'TEXT')
+    .replace(/\bENUM\s*\(\s*(?:'[^']*'\s*,?\s*)+\)/gi, 'TEXT')
     .replace(/\bVARCHAR\s*\(\d+\)/gi, 'TEXT')
     .replace(/\bCHAR\s*\(\d+\)/gi, 'TEXT')
     .replace(/\bTINYINT\s*\(\s*1\s*\)/gi, 'INTEGER')
