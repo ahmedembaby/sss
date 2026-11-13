@@ -24,8 +24,18 @@ let starting = false;
 
 /** Resolve Puppeteer's managed Chrome for Testing; never search the host for system Chrome/Edge. */
 function findBrowser(puppeteer) {
-  const browserPath = PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath();
-  return browserPath && fs.existsSync(browserPath) ? browserPath : null;
+  // A configured path may point to a developer's Windows machine while Render runs Linux.
+  // Prefer the explicit path only when it exists; otherwise fall back to Puppeteer's managed browser.
+  if (PUPPETEER_EXECUTABLE_PATH) {
+    if (fs.existsSync(PUPPETEER_EXECUTABLE_PATH)) return PUPPETEER_EXECUTABLE_PATH;
+    console.warn(`WhatsApp: ignoring unavailable PUPPETEER_EXECUTABLE_PATH: ${PUPPETEER_EXECUTABLE_PATH}`);
+  }
+  try {
+    const managedPath = puppeteer.executablePath();
+    return managedPath && fs.existsSync(managedPath) ? managedPath : null;
+  } catch {
+    return null;
+  }
 }
 
 function scheduleRestart(ms, reason) {
