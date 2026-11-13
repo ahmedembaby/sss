@@ -214,9 +214,9 @@ async function start() {
     // Everyone is offline after a restart
     await db.query("UPDATE users SET status = 'offline' WHERE status <> 'offline'");
   } catch (err) {
-    console.error('❌ Could not initialise MySQL:', err.message);
+    console.error('❌ Could not initialise SQLite:', err.message);
     if (err.stack) console.error(err.stack.split('\n').slice(0, 6).join('\n'));
-    console.error('   Check DB_HOST / DB_USER / DB_PASSWORD in .env and that MySQL is running.');
+    console.error('   Check SQLITE_FILE permissions and that the Node.js runtime supports node:sqlite (Node.js 22.5+).');
     process.exit(1);
   }
   require('./services/cleanup').start();

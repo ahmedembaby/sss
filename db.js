@@ -1,21 +1,12 @@
-
 'use strict';
 
-const mysql = require('mysql2/promise');
+const fs = require('node:fs');
+const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
 require('dotenv').config();
 
-const DB_NAME = process.env.DB_NAME || 'echat';
-
-const baseConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  port: Number(process.env.DB_PORT) || 3306,
-  charset: 'utf8mb4',
-  connectTimeout: 15000,
-};
-
-let pool = null;
+const DB_FILE = path.resolve(process.env.SQLITE_FILE || path.join(__dirname, 'data', 'echat.sqlite'));
+let sqlite = null;
 let initPromise = null;
 
 const TABLES = [
@@ -513,317 +504,136 @@ const COLUMNS = [
   ['device_sessions', 'revoked_at', 'DATETIME DEFAULT NULL'],
 ];
 
-// Modifications for older database schemas
-const MODIFY = [
-  "ALTER TABLE notifications MODIFY type ENUM('like','comment','follow','group_invite','group_request','group_approved','mention','follow_request','follow_accepted') NOT NULL",
 
-  'ALTER TABLE users MODIFY email VARCHAR(150) NULL',
-  'ALTER TABLE users MODIFY password VARCHAR(255) NULL',
 
-  "ALTER TABLE messages MODIFY type ENUM('text','image','file','voice','poll') DEFAULT 'text'",
-  "ALTER TABLE messages MODIFY status ENUM('sending','sent','delivered','read') DEFAULT 'sent'",
+function sqliteType(sql) {
+  return sql
+    .replace(/\s+ENGINE=InnoDB/gi, '')
+    .replace(/\s+DEFAULT CHARSET=utf8mb4/gi, '')
+    .replace(/\s+CHARACTER SET utf8mb4/gi, '')
+    .replace(/INT\s+PRIMARY KEY\s+AUTO_INCREMENT/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    .replace(/INT\s+AUTO_INCREMENT\s+PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    .replace(/\bAUTO_INCREMENT\b/gi, '')
+    .replace(/\bENUM\s*\((?:'[^']*'\s*,?\s*)+\)/gi, 'TEXT')
+    .replace(/\bVARCHAR\s*\(\d+\)/gi, 'TEXT')
+    .replace(/\bCHAR\s*\(\d+\)/gi, 'TEXT')
+    .replace(/\bTINYINT\s*\(\s*1\s*\)/gi, 'INTEGER')
+    .replace(/\bINT\b/gi, 'INTEGER')
+    .replace(/\bJSON\b/gi, 'TEXT')
+    .replace(/\s+ON UPDATE CURRENT_TIMESTAMP/gi, '')
+    .replace(/UNIQUE KEY\s+[a-zA-Z0-9_]+\s*\(([^)]+)\)/gi, 'UNIQUE ($1)')
+    .replace(/,?\s*INDEX\s+[a-zA-Z0-9_]+\s*\([^)]+\)/gi, '')
+    .replace(/,\s*\)/g, ')');
+}
 
-  'ALTER TABLE message_reactions MODIFY emoji VARCHAR(16) CHARACTER SET utf8mb4 NOT NULL',
-
-  "ALTER TABLE post_likes MODIFY emoji VARCHAR(16) CHARACTER SET utf8mb4 NOT NULL DEFAULT '❤️'",
-
-  'ALTER TABLE group_invites MODIFY expires_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP',
-];
-
-// Indexes
-// [table, index name, columns, unique]
-
-const INDEXES = [
-  ['users', 'uniq_users_phone', '(phone)', true],
-  ['messages', 'uniq_messages_client', '(sender_id, client_id)', true],
-  ['device_sessions', 'uniq_device_sessions_token_hash', '(token_hash)', true],
-
-  ['message_stars', 'idx_stars_user', '(user_id, created_at)', false],
-  ['message_reads', 'idx_reads_user', '(user_id)', false],
-  ['chat_poll_options', 'idx_poll_opts_msg', '(message_id)', false],
-
-  ['messages', 'idx_messages_conv_created', '(conversation_id, created_at)', false],
-  ['messages', 'idx_messages_conv_status', '(conversation_id, status)', false],
-
-  ['conversation_participants', 'idx_cp_user', '(user_id)', false],
-  ['scheduled_messages', 'idx_sched_due', '(send_at)', false],
-
-  ['reports', 'idx_reports_status', '(status, created_at)', false],
-  ['post_hashtags', 'idx_hashtag_tag', '(tag)', false],
-  ['stories', 'idx_stories_user', '(user_id, expires_at)', false],
-  ['calls', 'idx_calls_users', '(caller_id, callee_id)', false],
-
-  ['posts', 'idx_posts_user', '(user_id, created_at)', false],
-  ['posts', 'idx_posts_created', '(created_at)', false],
-
-  ['post_likes', 'idx_likes_post', '(post_id)', false],
-  ['messages', 'idx_messages_expires', '(expires_at)', false],
-
-  ['post_comments', 'idx_comments_post', '(post_id, created_at)', false],
-
-  ['follows', 'idx_follows_follower', '(follower_id)', false],
-  ['follows', 'idx_follows_following', '(following_id)', false],
-
-  ['notifications', 'idx_notifications_user', '(user_id, created_at)', false],
-
-  ['groups', 'idx_groups_type', '(type)', false],
-
-  ['group_members', 'idx_group_members_group', '(group_id, status)', false],
-  ['group_members', 'idx_group_members_user', '(user_id, status)', false],
-
-  ['group_invites', 'idx_group_invites_invitee', '(invitee_id, status)', false],
-
-  ['conversations', 'idx_conversations_group', '(group_id)', false],
-];
-
-// Validate identifiers used in SQL
-function validateIdentifier(value, label) {
-  if (
-    typeof value !== 'string' ||
-    !/^[a-zA-Z0-9_]+$/.test(value)
-  ) {
-    throw new Error(`Invalid ${label}: ${value}`);
+function normalizeParams(params) {
+  const values = [];
+  const expanded = [];
+  for (const value of (Array.isArray(params) ? params : params == null ? [] : [params])) {
+    if (Array.isArray(value)) {
+      if (!value.length) expanded.push('NULL');
+      else { expanded.push(value.map(() => '?').join(', ')); values.push(...value); }
+    } else { expanded.push('?'); values.push(value); }
   }
+  return { values, placeholders: expanded };
 }
 
-// Check whether a column exists
-async function columnExists(connection, table, column) {
-  const [rows] = await connection.query(
-    `SELECT 1
-     FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = ?
-     AND TABLE_NAME = ?
-     AND COLUMN_NAME = ?
-     LIMIT 1`,
-    [DB_NAME, table, column]
-  );
-
-  return rows.length > 0;
+function translate(sql, params) {
+  let statement = String(sql).trim();
+  const { values, placeholders } = normalizeParams(params);
+  let index = 0;
+  statement = statement.replace(/\?/g, () => placeholders[index++] || '?');
+  statement = statement.replace(/\bINSERT\s+IGNORE\s+INTO\b/gi, 'INSERT OR IGNORE INTO');
+  statement = statement.replace(/\bNOW\s*\(\s*\)/gi, 'CURRENT_TIMESTAMP');
+  statement = statement.replace(/\bIF\s*\(([^,]+),([^,]+),([^)]+)\)/gi, 'CASE WHEN $1 THEN $2 ELSE $3 END');
+  statement = statement.replace(/DATE_SUB\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi, "datetime('now', '-$1 $2')");
+  statement = statement.replace(/DATE_ADD\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi, "datetime('now', '+$1 $2')");
+  statement = statement.replace(/VALUES\s*\(\s*([a-zA-Z0-9_]+)\s*\)/gi, 'excluded.$1');
+  statement = statement.replace(/\s+ON DUPLICATE KEY UPDATE\s+/i, ' ON CONFLICT DO UPDATE SET ');
+  statement = statement.replace(/\bDATABASE\s*\(\s*\)/gi, "'sqlite'");
+  statement = statement.replace(/\bVERSION\s*\(\s*\)/gi, "sqlite_version()");
+  return { sql: statement, params: values };
 }
 
-// Check whether an index exists
-async function indexExists(connection, table, indexName) {
-  const [rows] = await connection.query(
-    `SELECT 1
-     FROM information_schema.STATISTICS
-     WHERE TABLE_SCHEMA = ?
-     AND TABLE_NAME = ?
-     AND INDEX_NAME = ?
-     LIMIT 1`,
-    [DB_NAME, table, indexName]
-  );
-
-  return rows.length > 0;
+function mysqlResult(result) {
+  return { insertId: Number(result.lastInsertRowid || 0), affectedRows: Number(result.changes || 0), changedRows: Number(result.changes || 0), warningStatus: 0 };
 }
 
-// Initialize database
+function execute(sql, params = []) {
+  if (!sqlite) throw new Error('Database not initialized. Call initDatabase() first.');
+  const translated = translate(sql, params);
+  const trimmed = translated.sql.trim();
+  if (/^(SELECT|PRAGMA|WITH|EXPLAIN)/i.test(trimmed) || /^SHOW\s+/i.test(trimmed)) {
+    if (/^SHOW\s+TABLES/i.test(trimmed)) {
+      return [sqlite.prepare("SELECT name AS `Tables_in_sqlite` FROM sqlite_master WHERE type='table' ORDER BY name").all(), []];
+    }
+    const rows = sqlite.prepare(trimmed).all(...translated.params);
+    return [rows, []];
+  }
+  const result = sqlite.prepare(trimmed).run(...translated.params);
+  return [mysqlResult(result), []];
+}
+
+function makeConnection() {
+  return {
+    query: async (sql, params) => execute(sql, params),
+    execute: async (sql, params) => execute(sql, params),
+    beginTransaction: async () => sqlite.exec('BEGIN'),
+    commit: async () => sqlite.exec('COMMIT'),
+    rollback: async () => sqlite.exec('ROLLBACK'),
+    release: () => {},
+  };
+}
+
 async function initDatabase() {
-  if (pool) return pool;
+  if (sqlite) return proxy;
   if (initPromise) return initPromise;
-
   initPromise = (async () => {
-    let boot = null;
-    let newPool = null;
-
+    fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+    const candidate = new DatabaseSync(DB_FILE);
+    candidate.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+    sqlite = candidate;
     try {
-      validateIdentifier(DB_NAME, 'database name');
-
-      // Create database if it does not exist
-      boot = await mysql.createConnection(baseConfig);
-
-      await boot.query(
-        `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`
-         CHARACTER SET utf8mb4
-         COLLATE utf8mb4_unicode_ci`
-      );
-
-      await boot.end();
-      boot = null;
-
-      // Create connection pool
-      newPool = mysql.createPool({
-        ...baseConfig,
-        database: DB_NAME,
-        waitForConnections: true,
-        connectionLimit: 10,
-        maxIdle: 5,
-        idleTimeout: 60000,
-        queueLimit: 0,
-        dateStrings: false,
-      });
-
-      // Validate table definitions
-      for (let i = 0; i < TABLES.length; i++) {
-        const sql = TABLES[i];
-
-        if (typeof sql !== 'string' || !sql.trim()) {
-          throw new Error(`Invalid TABLES entry at index ${i}`);
-        }
-
-        try {
-          await newPool.query(sql);
-        } catch (err) {
-          const name =
-            (sql.match(/EXISTS\s+`?(\w+)/i) || [])[1] || 'unknown';
-
-          console.error(`Failed creating table "${name}":`, {
-            code: err.code,
-            message: err.sqlMessage || err.message,
-          });
-
-          throw err;
-        }
+      for (const definition of TABLES) {
+        const ddl = sqliteType(definition);
+        sqlite.exec(ddl);
       }
-
-      console.log(`Created/verified ${TABLES.length} tables`);
-
-      // Add missing columns
       for (const [table, column, definition] of COLUMNS) {
-        validateIdentifier(table, 'table name');
-        validateIdentifier(column, 'column name');
-
-        if (!(await columnExists(newPool, table, column))) {
-          await newPool.query(
-            `ALTER TABLE \`${table}\`
-             ADD COLUMN \`${column}\` ${definition}`
-          );
-
-          console.log(`Added column: ${table}.${column}`);
+        const columns = sqlite.prepare(`PRAGMA table_info("${table}")`).all();
+        if (!columns.some((item) => item.name === column)) {
+          sqlite.exec(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${sqliteType(definition)}`);
         }
       }
-
-      // Modify old schema
-      for (const sql of MODIFY) {
+      for (const [table, name, columns, unique] of INDEXES) {
         try {
-          await newPool.query(sql);
-        } catch (err) {
-          console.warn(
-            'Schema modification skipped:',
-            err.code,
-            err.sqlMessage || err.message
-          );
+          sqlite.exec(`CREATE ${unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS "${name}" ON "${table}" ${columns}`);
+        } catch (error) {
+          if (!/already exists/i.test(error.message)) throw error;
         }
       }
-
-      // Normalize empty values
-      await newPool.query(
-        "UPDATE users SET phone = NULL WHERE phone = ''"
-      );
-
-      await newPool.query(
-        "UPDATE users SET email = NULL WHERE email = ''"
-      );
-
-      // Create missing indexes
-      for (const [table, name, cols, unique] of INDEXES) {
-        validateIdentifier(table, 'index table');
-        validateIdentifier(name, 'index name');
-
-        if (await indexExists(newPool, table, name)) {
-          continue;
-        }
-
-        try {
-          await newPool.query(
-            `CREATE ${unique ? 'UNIQUE ' : ''}INDEX \`${name}\`
-             ON \`${table}\` ${cols}`
-          );
-
-          console.log(`Created index: ${table}.${name}`);
-        } catch (err) {
-          console.warn(
-            `Index skipped: ${table}.${name}`,
-            err.code,
-            err.sqlMessage || err.message
-          );
-        }
-      }
-
-      // Verify connection
-      const [result] = await newPool.query(
-        'SELECT VERSION() AS version, DATABASE() AS database_name'
-      );
-
-      pool = newPool;
-
-      console.log('================================');
-      console.log('MySQL Database Ready');
-      console.log('Database:', result[0].database_name);
-      console.log('MySQL:', result[0].version);
-      console.log('Tables:', TABLES.length);
-      console.log('================================');
-
-      return pool;
-
-    } catch (err) {
-      if (newPool) {
-        await newPool.end().catch(() => {});
-      }
-
-      console.error('Database initialization failed:', {
-        code: err.code,
-        message: err.sqlMessage || err.message,
-      });
-
-      throw err;
-
-    } finally {
-      if (boot) {
-        await boot.end().catch(() => {});
-      }
+      sqlite.exec("UPDATE users SET phone = NULL WHERE phone = ''; UPDATE users SET email = NULL WHERE email = '';");
+      console.log(`SQLite database ready: ${DB_FILE} (${TABLES.length} tables)`);
+      return proxy;
+    } catch (error) {
+      sqlite.close();
+      sqlite = null;
+      throw error;
     }
   })();
-
-  try {
-    return await initPromise;
-  } catch (err) {
-    initPromise = null;
-    throw err;
-  }
+  try { return await initPromise; }
+  catch (error) { initPromise = null; throw error; }
 }
 
-// Database proxy
 const proxy = {
-
-  query: (...args) => {
-    if (!pool) {
-      throw new Error('Database not initialized. Call initDatabase() first.');
-    }
-
-    return pool.query(...args);
-  },
-
-  execute: (...args) => {
-    if (!pool) {
-      throw new Error('Database not initialized. Call initDatabase() first.');
-    }
-
-    return pool.execute(...args);
-  },
-
-  getConnection: () => {
-    if (!pool) {
-      throw new Error('Database not initialized. Call initDatabase() first.');
-    }
-
-    return pool.getConnection();
-  },
-
+  query: async (sql, params) => execute(sql, params),
+  execute: async (sql, params) => execute(sql, params),
+  getConnection: async () => makeConnection(),
   end: async () => {
-    if (pool) {
-      const currentPool = pool;
-
-      pool = null;
-      initPromise = null;
-
-      await currentPool.end();
-    }
+    if (sqlite) { sqlite.close(); sqlite = null; initPromise = null; }
   },
-
-  isReady: () => Boolean(pool),
-
+  isReady: () => Boolean(sqlite),
   initDatabase,
-
+  get filePath() { return DB_FILE; },
 };
 
 module.exports = proxy;
