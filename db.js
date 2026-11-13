@@ -506,6 +506,14 @@ const COLUMNS = [
 
 
 
+// Indexes removed from MySQL CREATE TABLE definitions by sqliteType().
+const INDEXES = [
+  ['post_images', 'idx_post_images_post', '(post_id)', false],
+  ['admin_audit', 'idx_audit_created', '(created_at)', false],
+  ['device_sessions', 'idx_device_sessions_user', '(user_id, revoked_at, last_active_at)', false],
+];
+
+
 function sqliteType(sql) {
   return sql
     .replace(/\s+ENGINE=InnoDB/gi, '')
@@ -514,7 +522,7 @@ function sqliteType(sql) {
     .replace(/INT\s+PRIMARY KEY\s+AUTO_INCREMENT/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
     .replace(/INT\s+AUTO_INCREMENT\s+PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
     .replace(/\bAUTO_INCREMENT\b/gi, '')
-    .replace(/\bENUM\s*\(\s*(?:'[^']*'\s*,?\s*)+\)/gi, 'TEXT')
+    .replace(/\bENUM\s*\(([\s\S]*?)\)/gi, (match, values) => /^\s*'(?:[^']|'')*'(?:\s*,\s*'(?:[^']|'')*')*\s*$/.test(values) ? 'TEXT' : match)
     .replace(/\bVARCHAR\s*\(\d+\)/gi, 'TEXT')
     .replace(/\bCHAR\s*\(\d+\)/gi, 'TEXT')
     .replace(/\bTINYINT\s*\(\s*1\s*\)/gi, 'INTEGER')
