@@ -508,21 +508,21 @@ const COLUMNS = [
 
 function sqliteType(sql) {
   return sql
-    .replace(/\\s+ENGINE=InnoDB/gi, '')
-    .replace(/\\s+DEFAULT CHARSET=utf8mb4/gi, '')
-    .replace(/\\s+CHARACTER SET utf8mb4/gi, '')
-    .replace(/INT\\s+PRIMARY KEY\\s+AUTO_INCREMENT/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
-    .replace(/INT\\s+AUTO_INCREMENT\\s+PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
-    .replace(/\\bAUTO_INCREMENT\\b/gi, '')
-    .replace(/\\bENUM\\s*\\((?:'[^']*'\\s*,?\\s*)+\\)/gi, 'TEXT')
-    .replace(/\\bVARCHAR\\s*\\(\\d+\\)/gi, 'TEXT')
-    .replace(/\\bCHAR\\s*\\(\\d+\\)/gi, 'TEXT')
-    .replace(/\\bTINYINT\\s*\\(\\s*1\\s*\\)/gi, 'INTEGER')
-    .replace(/\\bINT\\b/gi, 'INTEGER')
-    .replace(/\\bJSON\\b/gi, 'TEXT')
-    .replace(/\\s+ON UPDATE CURRENT_TIMESTAMP/gi, '')
-    .replace(/UNIQUE KEY\\s+[a-zA-Z0-9_]+\\s*\\(([^)]+)\\)/gi, 'UNIQUE ($1)')
-    .replace(/,?\\s*INDEX\\s+[a-zA-Z0-9_]+\\s*\\([^)]+\\)/gi, '');
+    .replace(/\s+ENGINE=InnoDB/gi, '')
+    .replace(/\s+DEFAULT CHARSET=utf8mb4/gi, '')
+    .replace(/\s+CHARACTER SET utf8mb4/gi, '')
+    .replace(/INT\s+PRIMARY KEY\s+AUTO_INCREMENT/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    .replace(/INT\s+AUTO_INCREMENT\s+PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    .replace(/\bAUTO_INCREMENT\b/gi, '')
+    .replace(/\bENUM\s*\((?:'[^']*'\s*,?\s*)+\)/gi, 'TEXT')
+    .replace(/\bVARCHAR\s*\(\d+\)/gi, 'TEXT')
+    .replace(/\bCHAR\s*\(\d+\)/gi, 'TEXT')
+    .replace(/\bTINYINT\s*\(\s*1\s*\)/gi, 'INTEGER')
+    .replace(/\bINT\b/gi, 'INTEGER')
+    .replace(/\bJSON\b/gi, 'TEXT')
+    .replace(/\s+ON UPDATE CURRENT_TIMESTAMP/gi, '')
+    .replace(/UNIQUE KEY\s+[a-zA-Z0-9_]+\s*\(([^)]+)\)/gi, 'UNIQUE ($1)')
+    .replace(/,?\s*INDEX\s+[a-zA-Z0-9_]+\s*\([^)]+\)/gi, '');
 }
 
 function normalizeParams(params) {
@@ -541,16 +541,16 @@ function translate(sql, params) {
   let statement = String(sql).trim();
   const { values, placeholders } = normalizeParams(params);
   let index = 0;
-  statement = statement.replace(/\\?/g, () => placeholders[index++] || '?');
-  statement = statement.replace(/\\bINSERT\\s+IGNORE\\s+INTO\\b/gi, 'INSERT OR IGNORE INTO');
-  statement = statement.replace(/\\bNOW\\s*\\(\\s*\\)/gi, 'CURRENT_TIMESTAMP');
-  statement = statement.replace(/\\bIF\\s*\\(([^,]+),([^,]+),([^)]+)\\)/gi, 'CASE WHEN $1 THEN $2 ELSE $3 END');
-  statement = statement.replace(/DATE_SUB\\(CURRENT_TIMESTAMP,\\s*INTERVAL\\s+(\\d+)\\s+(SECOND|MINUTE|HOUR|DAY)\\)/gi, "datetime('now', '-$1 $2')");
-  statement = statement.replace(/DATE_ADD\\(CURRENT_TIMESTAMP,\\s*INTERVAL\\s+(\\d+)\\s+(SECOND|MINUTE|HOUR|DAY)\\)/gi, "datetime('now', '+$1 $2')");
-  statement = statement.replace(/VALUES\\s*\\(\\s*([a-zA-Z0-9_]+)\\s*\\)/gi, 'excluded.$1');
-  statement = statement.replace(/\\s+ON DUPLICATE KEY UPDATE\\s+/i, ' ON CONFLICT DO UPDATE SET ');
-  statement = statement.replace(/\\bDATABASE\\s*\\(\\s*\\)/gi, "'sqlite'");
-  statement = statement.replace(/\\bVERSION\\s*\\(\\s*\\)/gi, "sqlite_version()");
+  statement = statement.replace(/\?/g, () => placeholders[index++] || '?');
+  statement = statement.replace(/\bINSERT\s+IGNORE\s+INTO\b/gi, 'INSERT OR IGNORE INTO');
+  statement = statement.replace(/\bNOW\s*\(\s*\)/gi, 'CURRENT_TIMESTAMP');
+  statement = statement.replace(/\bIF\s*\(([^,]+),([^,]+),([^)]+)\)/gi, 'CASE WHEN $1 THEN $2 ELSE $3 END');
+  statement = statement.replace(/DATE_SUB\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi, "datetime('now', '-$1 $2')");
+  statement = statement.replace(/DATE_ADD\(CURRENT_TIMESTAMP,\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)\)/gi, "datetime('now', '+$1 $2')");
+  statement = statement.replace(/VALUES\s*\(\s*([a-zA-Z0-9_]+)\s*\)/gi, 'excluded.$1');
+  statement = statement.replace(/\s+ON DUPLICATE KEY UPDATE\s+/i, ' ON CONFLICT DO UPDATE SET ');
+  statement = statement.replace(/\bDATABASE\s*\(\s*\)/gi, "'sqlite'");
+  statement = statement.replace(/\bVERSION\s*\(\s*\)/gi, "sqlite_version()");
   return { sql: statement, params: values };
 }
 
@@ -562,8 +562,8 @@ function execute(sql, params = []) {
   if (!sqlite) throw new Error('Database not initialized. Call initDatabase() first.');
   const translated = translate(sql, params);
   const trimmed = translated.sql.trim();
-  if (/^(SELECT|PRAGMA|WITH|EXPLAIN)/i.test(trimmed) || /^SHOW\\s+/i.test(trimmed)) {
-    if (/^SHOW\\s+TABLES/i.test(trimmed)) {
+  if (/^(SELECT|PRAGMA|WITH|EXPLAIN)/i.test(trimmed) || /^SHOW\s+/i.test(trimmed)) {
+    if (/^SHOW\s+TABLES/i.test(trimmed)) {
       return [sqlite.prepare("SELECT name AS `Tables_in_sqlite` FROM sqlite_master WHERE type='table' ORDER BY name").all(), []];
     }
     const rows = sqlite.prepare(trimmed).all(...translated.params);
