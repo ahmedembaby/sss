@@ -1,7 +1,7 @@
 /**
  * WhatsApp OTP delivery (whatsapp-web.js).
  * The server logs in once as a normal WhatsApp account (scan the QR code, see /api/whatsapp/setup);
- * the session is stored in .wwebjs_auth and re-used on every start.
+ * the session is stored at WHATSAPP_AUTH_PATH and re-used on every start.
  */
 const fs = require('fs');
 const path = require('path');
@@ -66,6 +66,7 @@ async function destroyClient() {
 
 async function startInternal() {
   if (!WHATSAPP_ENABLED || shuttingDown || starting) return;
+  if (client && [STATUS.STARTING, STATUS.QR, STATUS.AUTHENTICATED, STATUS.READY].includes(status)) return;
   starting = true;
   status = STATUS.STARTING;
   lastError = null;
@@ -142,7 +143,7 @@ async function startInternal() {
     status = STATUS.ERROR;
     lastError = String(err.message || err).split('\n')[0];
     console.error('WhatsApp initialization failed:', lastError);
-    if (err.fatal) console.error('     -> or set WHATSAPP_ENABLED=false and use OTP_DEV_MODE=true for development.');
+    if (err.fatal) console.error('     -> Set WHATSAPP_ENABLED=false if WhatsApp delivery should be disabled.');
     await destroyClient();
     if (!err.fatal) scheduleRestart(30000, 'init error');
   } finally {
