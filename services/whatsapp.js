@@ -34,20 +34,30 @@ function serialize(task) {
 }
 
 /** Resolve Puppeteer's managed Chrome for Testing; never search the host for system Chrome/Edge. */
+
+/**
+ * Resolve the browser managed by Puppeteer.
+ * Never use a hardcoded Chrome path or a developer-specific path.
+ */
 function findBrowser(puppeteer) {
-  // A configured path may point to a developer's Windows machine while Render runs Linux.
-  // Prefer the explicit path only when it exists; otherwise fall back to Puppeteer's managed browser.
-  if (PUPPETEER_EXECUTABLE_PATH) {
-    if (fs.existsSync(PUPPETEER_EXECUTABLE_PATH)) return PUPPETEER_EXECUTABLE_PATH;
-    console.warn(`WhatsApp: ignoring unavailable PUPPETEER_EXECUTABLE_PATH: ${PUPPETEER_EXECUTABLE_PATH}`);
-  }
   try {
-    const managedPath = puppeteer.executablePath();
-    return managedPath && fs.existsSync(managedPath) ? managedPath : null;
-  } catch {
-    return null;
+    const browserPath = puppeteer.executablePath();
+
+    if (!browserPath || !fs.existsSync(browserPath)) {
+      throw new Error(
+        'Puppeteer browser is missing. Run: npm run browser:install'
+      );
+    }
+
+    fs.accessSync(browserPath, fs.constants.X_OK);
+
+    return browserPath;
+  } catch (error) {
+    console.error('WhatsApp browser detection failed:', error.message);
+    throw error;
   }
 }
+
 
 function scheduleRestart(ms, reason) {
   if (restartTimer || !WHATSAPP_ENABLED) return;
