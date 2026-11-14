@@ -107,6 +107,14 @@ function findBrowser(puppeteer) {
     );
   }
 
+  console.log('Puppeteer diagnostics:', {
+  platform: process.platform,
+  home: process.env.HOME,
+  cacheDir: process.env.PUPPETEER_CACHE_DIR,
+  executablePath: browserPath,
+  exists: fs.existsSync(browserPath),
+});
+
   if (!fs.existsSync(browserPath)) {
     throw Object.assign(
       new Error(
